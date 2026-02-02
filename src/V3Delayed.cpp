@@ -177,6 +177,8 @@ class DelayedVisitor final : public VNVisitor {
             } m_flagSharedKit;
             struct {  // Stuff needed for Scheme::FlagUnique
                 AstAlwaysPost* postp;  // The post block for commiting results
+                AstVarScope* commitFlagp;  // The commit flag variable
+                AstVarScope* commitValp;  // The commit value variable
             } m_flagUniqueKit;
             struct {  // Stuff needed for Scheme::ValueQueueWhole/Scheme::ValueQueuePartial
                 AstVarScope* vscp;  // The commit queue variable
@@ -791,42 +793,70 @@ class DelayedVisitor final : public VNVisitor {
         AstActive* const activep = new AstActive{flp, "nba-flag-unique", vscpInfo.senTreep()};
         activep->senTreeStorep(vscpInfo.senTreep());
         scopep->addBlocksp(activep);
-        // Add 'Post' scheduled process to be populated later
+        // Add 'Post' scheduled process
         AstAlwaysPost* const postp = new AstAlwaysPost{flp};
         activep->addStmtsp(postp);
         vscpInfo.flagUniqueKit().postp = postp;
+
+        // Create a flag variable to track whether NBA occurred
+        const std::string flagName = "__VdlySet__" + vscp->varp()->shortName();
+        AstVarScope* const commitFlagp = createTemp(flp, scopep, flagName, 1);
+        commitFlagp->varp()->setIgnorePostWrite();
+        vscpInfo.flagUniqueKit().commitFlagp = commitFlagp;
+        // Create a value variable to track the final value after a NBA
+        const std::string valName = "__VdlyVal__" + vscp->varp()->shortName();
+        AstVarScope* const commitValp = createTemp(flp, scopep, valName, vscp->dtypep());
+        vscpInfo.flagUniqueKit().commitValp = commitValp;
+
+        // NBA 'Post' block: if (__VdlySet) { __VdlySet = 0; var = __VdlyVal; }
+        // This runs after all NBAs in the time step, applying the last captured value
+        AstIf* const ifp = new AstIf{flp, new AstVarRef{flp, commitFlagp, VAccess::READ}};
+        postp->addStmtsp(ifp);
+        ifp->addThensp(new AstAssign{flp, new AstVarRef{flp, commitFlagp, VAccess::WRITE},
+                                     new AstConst{flp, AstConst::BitFalse{}}});
+        ifp->addThensp(new AstAssign{flp, new AstVarRef{flp, vscp, VAccess::WRITE},
+                                     new AstVarRef{flp, commitValp, VAccess::READ}});
     }
     void convertSchemeFlagUnique(AstAssignDly* nodep, AstVarScope* vscp, VarScopeInfo& vscpInfo) {
         UASSERT_OBJ(vscpInfo.m_scheme == Scheme::FlagUnique, vscp, "Inconsistent NBA scheme");
-        FileLine* const flp = vscp->fileline();
-        AstScope* const scopep = VN_AS(nodep->user2p(), Scope);
+        FileLine* const flp = nodep->fileline();
 
-        // Base name suffix for signals constructed below
-        const std::string baseName = uniqueTmpName(scopep, vscp, vscpInfo);
+        AstVarScope* const commitFlagp = vscpInfo.flagUniqueKit().commitFlagp;
+        AstVarScope* const commitValp = vscpInfo.flagUniqueKit().commitValp;
 
-        // Unlink and capture the RHS value
-        AstNodeExpr* const capturedRhsp
-            = captureVal(scopep, nodep, nodep->rhsp()->unlinkFrBack(), "__VdlyVal" + baseName);
+        // Whole-variable update: use shared flag/value so last NBA wins
+        if (VN_IS(nodep->lhsp(), VarRef)) {
+            // Capture the RHS value to be applied at 'Post' time
+            nodep->addHereThisAsNext(new AstAssign{flp,
+                                                   new AstVarRef{flp, commitValp, VAccess::WRITE},
+                                                   nodep->rhsp()->unlinkFrBack()});
+            // Set the flag to indicate this NBA needs to be applied
+            nodep->addHereThisAsNext(new AstAssign{flp,
+                                                   new AstVarRef{flp, commitFlagp, VAccess::WRITE},
+                                                   new AstConst{flp, AstConst::BitTrue{}}});
+        } else {
+            // Partial update: different bits/indices may be written, so each needs its own flag
+            AstScope* const scopep = VN_AS(nodep->user2p(), Scope);
+            const std::string baseName = uniqueTmpName(scopep, vscp, vscpInfo);
+            AstNodeExpr* const capturedRhsp
+                = captureVal(scopep, nodep, nodep->rhsp()->unlinkFrBack(), "__VdlyVal" + baseName);
+            AstNodeExpr* const capturedLhsp
+                = captureLhs(scopep, nodep, nodep->lhsp()->unlinkFrBack(), baseName);
+            AstVarScope* const uniqueFlagVscp = createTemp(flp, scopep, "__VdlySet" + baseName, 1);
+            uniqueFlagVscp->varp()->setIgnorePostWrite();
 
-        // Unlink and capture the LHS reference
-        AstNodeExpr* const capturedLhsp
-            = captureLhs(scopep, nodep, nodep->lhsp()->unlinkFrBack(), baseName);
+            // Set the flag to indicate this partial NBA needs to be applied
+            nodep->addHereThisAsNext(
+                new AstAssign{flp, new AstVarRef{flp, uniqueFlagVscp, VAccess::WRITE},
+                              new AstConst{flp, AstConst::BitTrue{}}});
 
-        // Create new flag
-        AstVarScope* const flagVscp = createTemp(flp, scopep, "__VdlySet" + baseName, 1);
-        flagVscp->varp()->setIgnorePostWrite();
-        // Set the flag at the original NBA
-        nodep->addHereThisAsNext(  //
-            new AstAssign{flp, new AstVarRef{flp, flagVscp, VAccess::WRITE},
-                          new AstConst{flp, AstConst::BitTrue{}}});
-        // Add the 'Post' scheduled commit
-        AstIf* const ifp = new AstIf{flp, new AstVarRef{flp, flagVscp, VAccess::READ}};
-        vscpInfo.flagUniqueKit().postp->addStmtsp(ifp);
-        // Immediately clear the flag
-        ifp->addThensp(new AstAssign{flp, new AstVarRef{flp, flagVscp, VAccess::WRITE},
-                                     new AstConst{flp, AstConst::BitFalse{}}});
-        // Commit the value
-        ifp->addThensp(new AstAssign{flp, capturedLhsp, capturedRhsp});
+            // NBA 'Post' block: if (__VdlySet) { __VdlySet = 0; var[idx] = __VdlyVal; }
+            AstIf* const ifp = new AstIf{flp, new AstVarRef{flp, uniqueFlagVscp, VAccess::READ}};
+            vscpInfo.flagUniqueKit().postp->addStmtsp(ifp);
+            ifp->addThensp(new AstAssign{flp, new AstVarRef{flp, uniqueFlagVscp, VAccess::WRITE},
+                                         new AstConst{flp, AstConst::BitFalse{}}});
+            ifp->addThensp(new AstAssign{flp, capturedLhsp, capturedRhsp});
+        }
 
         // Delete original NBA
         pushDeletep(nodep->unlinkFrBack());
