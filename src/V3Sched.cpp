@@ -86,18 +86,32 @@ void invertAndMergeSenTreeMap(
 }
 
 std::vector<AstSenTree*>
-findTriggeredIface(const AstVarScope* vscp, const VirtIfaceTriggers::IfaceSensMap& vifTrigged,
+findTriggeredIface(const AstVarScope* vscp,
                    const VirtIfaceTriggers::IfaceMemberSensMap& vifMemberTriggered) {
-    UASSERT_OBJ(vscp->varp()->sensIfacep(), vscp, "Not an virtual interface trigger");
-    std::vector<AstSenTree*> result;
-    const auto ifaceIt = vifTrigged.find(vscp->varp()->sensIfacep());
-    if (ifaceIt != vifTrigged.end()) result.push_back(ifaceIt->second);
-    for (const auto& memberIt : vifMemberTriggered) {
-        if (vscp->varp()->sensIfacep() == memberIt.first.m_ifacep) {
-            result.push_back(memberIt.second);
-        }
+    const AstIface* ifacep;
+    if (vscp->varp()->isVirtIface()) {
+        // If `vscp->varp()->isVirtIface()` is true then the interface type that viface is pointing
+        // to is under `VN_AS(vscp->varp()->dtypep(), IfaceRefDType)->ifacep()`
+
+        ifacep = VN_AS(vscp->varp()->dtypep(), IfaceRefDType)->ifacep();
+
+        // Virtual interface is sensitive to a different interface type than it is a virtual type
+        // of - this may be a valid behaviour but this function does not expects that
+        UASSERT_OBJ(vscp->varp()->sensIfacep() == nullptr, vscp,
+                    "Virtual interface has an ambiguous type - "
+                        << vscp->varp()->sensIfacep()->prettyTypeName()
+                        << " != " << ifacep->prettyTypeName());
+    } else {
+        // If `vscp->varp()` is of a non-virtual interface type it has `sensIfacep()` set to
+        // interface it is sensitive to
+        ifacep = vscp->varp()->sensIfacep();
     }
-    if (result.empty()) vscp->v3fatalSrc("Did not find virtual interface trigger");
+    UASSERT_OBJ(ifacep, vscp, "Variable is not sensitive for any interface");
+    std::vector<AstSenTree*> result;
+    for (const auto& memberIt : vifMemberTriggered) {
+        if (memberIt.first.m_ifacep == ifacep) result.push_back(memberIt.second);
+    }
+    UASSERT_OBJ(!result.empty(), vscp, "Did not find virtual interface trigger");
     return result;
 }
 
@@ -381,10 +395,6 @@ void createFinal(AstNetlist* netlistp, const LogicClasses& logicClasses) {
 void addVirtIfaceTriggerAssignments(const VirtIfaceTriggers& virtIfaceTriggers,
                                     uint32_t vifTriggerIndex, uint32_t vifMemberTriggerIndex,
                                     const TriggerKit& trigKit) {
-    for (const auto& p : virtIfaceTriggers.m_ifaceTriggers) {
-        trigKit.addExtraTriggerAssignment(p.second, vifTriggerIndex);
-        ++vifTriggerIndex;
-    }
     for (const auto& p : virtIfaceTriggers.m_memberTriggers) {
         trigKit.addExtraTriggerAssignment(p.second, vifMemberTriggerIndex);
         ++vifMemberTriggerIndex;
@@ -411,7 +421,7 @@ void createSettle(AstNetlist* netlistp, AstCFunc* const initFuncp, SenExprBuilde
     // Gather the relevant sensitivity expressions and create the trigger kit
     const auto& senTreeps = getSenTreesUsedBy({&comb, &hybrid});
     const TriggerKit trigKit = TriggerKit::create(netlistp, initFuncp, senExprBulider, {},
-                                                  senTreeps, "stl", extraTriggers, true);
+                                                  senTreeps, "stl", extraTriggers, true, false);
 
     // Remap sensitivities (comb has none, so only do the hybrid)
     remapSensitivities(hybrid, trigKit.mapVec());
@@ -436,7 +446,11 @@ void createSettle(AstNetlist* netlistp, AstCFunc* const initFuncp, SenExprBuilde
         // Inner loop statements
         nullptr,
         // Prep statements: Compute the current 'stl' triggers
-        trigKit.newCompCall(),
+        [&trigKit] {
+            AstNodeStmt* const stmtp = trigKit.newCompBaseCall();
+            if (stmtp) stmtp->addNext(trigKit.newDumpCall(trigKit.vscp(), trigKit.name(), true));
+            return stmtp;
+        }(),
         // Work statements: Invoke the 'stl' function
         util::callVoidFunc(stlFuncp));
 
@@ -479,9 +493,6 @@ AstNode* createInputCombLoop(AstNetlist* netlistp, AstCFunc* const initFuncp,
                                                ? extraTriggers.allocate("DPI export trigger")
                                                : std::numeric_limits<uint32_t>::max();
     const size_t firstVifTriggerIndex = extraTriggers.size();
-    for (const auto& p : virtIfaceTriggers.m_ifaceTriggers) {
-        extraTriggers.allocate("virtual interface: " + p.first->name());
-    }
     const size_t firstVifMemberTriggerIndex = extraTriggers.size();
     for (const auto& p : virtIfaceTriggers.m_memberTriggers) {
         const auto& item = p.first;
@@ -492,7 +503,8 @@ AstNode* createInputCombLoop(AstNetlist* netlistp, AstCFunc* const initFuncp,
     // Gather the relevant sensitivity expressions and create the trigger kit
     const auto& senTreeps = getSenTreesUsedBy({&logic});
     const TriggerKit trigKit = TriggerKit::create(netlistp, initFuncp, senExprBuilder, {},
-                                                  senTreeps, "ico", extraTriggers, false);
+                                                  senTreeps, "ico", extraTriggers, false, false);
+    std::ignore = senExprBuilder.getAndClearResults();
 
     if (dpiExportTriggerVscp) {
         trigKit.addExtraTriggerAssignment(dpiExportTriggerVscp, dpiExportTriggerIndex);
@@ -516,8 +528,6 @@ AstNode* createInputCombLoop(AstNetlist* netlistp, AstCFunc* const initFuncp,
         = dpiExportTriggerVscp
               ? trigKit.newExtraTriggerSenTree(trigKit.vscp(), dpiExportTriggerIndex)
               : nullptr;
-    const auto& vifTriggeredIco
-        = virtIfaceTriggers.makeIfaceToSensMap(trigKit, firstVifTriggerIndex, trigKit.vscp());
     const auto& vifMemberTriggeredIco = virtIfaceTriggers.makeMemberToSensMap(
         trigKit, firstVifMemberTriggerIndex, trigKit.vscp());
 
@@ -530,9 +540,9 @@ AstNode* createInputCombLoop(AstNetlist* netlistp, AstCFunc* const initFuncp,
                 out.push_back(inputChanged);
             }
             if (varp->isWrittenByDpi()) out.push_back(dpiExportTriggered);
-            if (vscp->varp()->sensIfacep()) {
+            if (vscp->varp()->isVirtIface()) {
                 std::vector<AstSenTree*> ifaceTriggered
-                    = findTriggeredIface(vscp, vifTriggeredIco, vifMemberTriggeredIco);
+                    = findTriggeredIface(vscp, vifMemberTriggeredIco);
                 out.insert(out.end(), ifaceTriggered.begin(), ifaceTriggered.end());
             }
         });
@@ -544,7 +554,11 @@ AstNode* createInputCombLoop(AstNetlist* netlistp, AstCFunc* const initFuncp,
         // Inner loop statements
         nullptr,
         // Prep statements: Compute the current 'ico' triggers
-        trigKit.newCompCall(),
+        [&trigKit] {
+            AstNodeStmt* const stmtp = trigKit.newCompBaseCall();
+            if (stmtp) stmtp->addNext(trigKit.newDumpCall(trigKit.vscp(), trigKit.name(), true));
+            return stmtp;
+        }(),
         // Work statements: Invoke the 'ico' function
         util::callVoidFunc(icoFuncp));
 
@@ -581,8 +595,8 @@ void createEval(AstNetlist* netlistp,  //
 ) {
     FileLine* const flp = netlistp->fileline();
 
-    // 'createResume' consumes the contents that 'createCommit' needs, so do the right order
-    AstCCall* const timingCommitp = timingKit.createCommit(netlistp);
+    // 'createResume' consumes the contents that 'createReady' needs, so do the right order
+    AstCCall* const timingReadyp = timingKit.createReady(netlistp);
     AstCCall* const timingResumep = timingKit.createResume(netlistp);
 
     // Create the active eval loop
@@ -593,9 +607,16 @@ void createEval(AstNetlist* netlistp,  //
         // Prep statements
         [&]() {
             // Compute the current 'act' triggers - the NBA triggers are the latched value
-            AstNodeStmt* stmtsp = trigKit.newCompCall(nbaKit.m_vscp);
-            // Commit trigger awaits from the previous iteration
-            if (timingCommitp) stmtsp = AstNode::addNext(stmtsp, timingCommitp->makeStmt());
+            AstNodeStmt* stmtsp = trigKit.newCompBaseCall();
+            AstNodeStmt* const dumpp
+                = stmtsp ? trigKit.newDumpCall(trigKit.vscp(), trigKit.name(), true) : nullptr;
+            // Mark as ready for triggered awaits
+            if (timingReadyp) stmtsp = AstNode::addNext(stmtsp, timingReadyp->makeStmt());
+            if (AstVarScope* const vscAccp = trigKit.vscAccp()) {
+                stmtsp = AstNode::addNext(stmtsp, trigKit.newOrIntoCall(actKit.m_vscp, vscAccp));
+            }
+            stmtsp = AstNode::addNext(stmtsp, trigKit.newCompExtCall(nbaKit.m_vscp));
+            stmtsp = AstNode::addNext(stmtsp, dumpp);
             // Latch the 'act' triggers under the 'nba' triggers
             stmtsp = AstNode::addNext(stmtsp, trigKit.newOrIntoCall(nbaKit.m_vscp, actKit.m_vscp));
             //
@@ -604,8 +625,15 @@ void createEval(AstNetlist* netlistp,  //
         // Work statements
         [&]() {
             AstNodeStmt* workp = nullptr;
+            if (AstVarScope* const actAccp = trigKit.vscAccp()) {
+                AstCMethodHard* const cCallp = new AstCMethodHard{
+                    flp, new AstVarRef{flp, actAccp, VAccess::WRITE}, VCMethod::UNPACKED_FILL,
+                    new AstConst{flp, AstConst::Unsized64{}, 0}};
+                cCallp->dtypeSetVoid();
+                workp = AstNode::addNext(workp, cCallp->makeStmt());
+            }
             // Resume triggered timing schedulers
-            if (timingResumep) workp = timingResumep->makeStmt();
+            if (timingResumep) workp = AstNode::addNext(workp, timingResumep->makeStmt());
             // Invoke the 'act' function
             workp = AstNode::addNext(workp, util::callVoidFunc(actKit.m_funcp));
             //
@@ -645,7 +673,7 @@ void createEval(AstNetlist* netlistp,  //
             netlistp->nbaEventp(nullptr);
             netlistp->nbaEventTriggerp(nullptr);
 
-            // If a dynamic NBA is pending, clear the pending flag and fire the commit event
+            // If a dynamic NBA is pending, clear the pending flag and fire the ready event
             AstIf* const ifp = new AstIf{flp, new AstVarRef{flp, nbaEventTriggerp, VAccess::READ}};
             ifp->addThensp(util::setVar(continuep, 1));
             ifp->addThensp(util::setVar(nbaEventTriggerp, 0));
@@ -720,17 +748,6 @@ void createEval(AstNetlist* netlistp,  //
 
 //============================================================================
 // Helper that builds virtual interface trigger sentrees
-
-VirtIfaceTriggers::IfaceSensMap
-VirtIfaceTriggers::makeIfaceToSensMap(const TriggerKit& trigKit, uint32_t vifTriggerIndex,
-                                      AstVarScope* trigVscp) const {
-    std::map<const AstIface*, AstSenTree*> map;
-    for (const auto& p : m_ifaceTriggers) {
-        map.emplace(p.first, trigKit.newExtraTriggerSenTree(trigVscp, vifTriggerIndex));
-        ++vifTriggerIndex;
-    }
-    return map;
-}
 
 VirtIfaceTriggers::IfaceMemberSensMap
 VirtIfaceTriggers::makeMemberToSensMap(const TriggerKit& trigKit, uint32_t vifTriggerIndex,
@@ -860,9 +877,6 @@ void schedule(AstNetlist* netlistp) {
                                                ? extraTriggers.allocate("DPI export trigger")
                                                : std::numeric_limits<uint32_t>::max();
     const uint32_t firstVifTriggerIndex = extraTriggers.size();
-    for (const auto& p : virtIfaceTriggers.m_ifaceTriggers) {
-        extraTriggers.allocate("virtual interface: " + p.first->name());
-    }
     const uint32_t firstVifMemberTriggerIndex = extraTriggers.size();
     for (const auto& p : virtIfaceTriggers.m_memberTriggers) {
         const auto& item = p.first;
@@ -876,11 +890,12 @@ void schedule(AstNetlist* netlistp) {
                                                &logicRegions.m_obs,  //
                                                &logicRegions.m_react,  //
                                                &timingKit.m_lbs});
-    const TriggerKit trigKit = TriggerKit::create(netlistp, staticp, senExprBuilder, preTreeps,
-                                                  senTreeps, "act", extraTriggers, false);
+    const TriggerKit trigKit
+        = TriggerKit::create(netlistp, staticp, senExprBuilder, preTreeps, senTreeps, "act",
+                             extraTriggers, false, v3Global.usesTiming());
 
     // Add post updates from the timing kit
-    if (timingKit.m_postUpdates) trigKit.compp()->addStmtsp(timingKit.m_postUpdates);
+    if (timingKit.m_postUpdates) trigKit.compBasep()->addStmtsp(timingKit.m_postUpdates);
 
     if (dpiExportTriggerVscp) {
         trigKit.addExtraTriggerAssignment(dpiExportTriggerVscp, dpiExportTriggerIndex);
@@ -915,8 +930,6 @@ void schedule(AstNetlist* netlistp) {
               ? trigKit.newExtraTriggerSenTree(trigKit.vscp(), dpiExportTriggerIndex)
               : nullptr;
 
-    const auto& vifTriggeredAct
-        = virtIfaceTriggers.makeIfaceToSensMap(trigKit, firstVifTriggerIndex, trigKit.vscp());
     const auto& vifMemberTriggeredAct = virtIfaceTriggers.makeMemberToSensMap(
         trigKit, firstVifMemberTriggerIndex, trigKit.vscp());
 
@@ -926,9 +939,9 @@ void schedule(AstNetlist* netlistp) {
             auto it = actTimingDomains.find(vscp);
             if (it != actTimingDomains.end()) out = it->second;
             if (vscp->varp()->isWrittenByDpi()) out.push_back(dpiExportTriggeredAct);
-            if (vscp->varp()->sensIfacep()) {
+            if (vscp->varp()->isVirtIface()) {
                 std::vector<AstSenTree*> ifaceTriggered
-                    = findTriggeredIface(vscp, vifTriggeredAct, vifMemberTriggeredAct);
+                    = findTriggeredIface(vscp, vifMemberTriggeredAct);
                 out.insert(out.end(), ifaceTriggered.begin(), ifaceTriggered.end());
             }
         });
@@ -954,8 +967,6 @@ void schedule(AstNetlist* netlistp) {
             = dpiExportTriggerVscp
                   ? trigKit.newExtraTriggerSenTree(trigVscp, dpiExportTriggerIndex)
                   : nullptr;
-        const auto& vifTriggered
-            = virtIfaceTriggers.makeIfaceToSensMap(trigKit, firstVifTriggerIndex, trigVscp);
         const auto& vifMemberTriggered
             = virtIfaceTriggers.makeMemberToSensMap(trigKit, firstVifMemberTriggerIndex, trigVscp);
 
@@ -966,9 +977,11 @@ void schedule(AstNetlist* netlistp) {
                 auto it = timingDomains.find(vscp);
                 if (it != timingDomains.end()) out = it->second;
                 if (vscp->varp()->isWrittenByDpi()) out.push_back(dpiExportTriggered);
-                if (vscp->varp()->sensIfacep()) {
+                // Sometimes virtual interfaces mix with non-virtual one so, here both have to be
+                // detected - look `t_virtual_interface_nba_assign`
+                if (vscp->varp()->sensIfacep() || vscp->varp()->isVirtIface()) {
                     std::vector<AstSenTree*> ifaceTriggered
-                        = findTriggeredIface(vscp, vifTriggered, vifMemberTriggered);
+                        = findTriggeredIface(vscp, vifMemberTriggered);
                     out.insert(out.end(), ifaceTriggered.begin(), ifaceTriggered.end());
                 }
             });
@@ -1007,7 +1020,44 @@ void schedule(AstNetlist* netlistp) {
     createEval(netlistp, icoLoopp, trigKit, actKit, nbaKit, obsKit, reactKit, postponedFuncp,
                timingKit);
 
-    // Step 15: Clean up
+    // Step 15: Add neccessary evaluation before awaits
+    if (AstCCall* const readyp = timingKit.createReady(netlistp)) {
+        staticp->addStmtsp(readyp->makeStmt());
+        beforeTrigVisitor(netlistp, senExprBuilder, trigKit);
+    } else {
+        // beforeTrigVisitor clears Sentree pointers in AstCAwaits (as these sentrees will get
+        // deleted later) if there was no need to call it, SenTrees have to be cleaned manually
+        netlistp->foreach([](AstCAwait* const cAwaitp) { cAwaitp->clearSentreep(); });
+    }
+    if (AstVarScope* const trigAccp = trigKit.vscAccp()) {
+        // Copy trigger vector to accumulator at the end of static initialziation so,
+        // triggers fired during initialization persist to the first resume.
+        const AstUnpackArrayDType* const trigAccDTypep
+            = VN_AS(trigAccp->dtypep(), UnpackArrayDType);
+        UASSERT_OBJ(
+            trigAccDTypep->right() == 0, trigAccp,
+            "Expected that trigger vector and accumulator start elements enumeration from 0");
+        UASSERT_OBJ(trigAccDTypep->left() >= 0, trigAccp,
+                    "Expected that trigger vector and accumulator has no negative indexes");
+        FileLine* const flp = trigAccp->fileline();
+        AstVarScope* const vscp = netlistp->topScopep()->scopep()->createTemp("__Vi", 32);
+        AstLoop* const loopp = new AstLoop{flp};
+        loopp->addStmtsp(
+            new AstAssign{flp,
+                          new AstArraySel{flp, new AstVarRef{flp, trigAccp, VAccess::WRITE},
+                                          new AstVarRef{flp, vscp, VAccess::READ}},
+                          new AstArraySel{flp, new AstVarRef{flp, actKit.m_vscp, VAccess::READ},
+                                          new AstVarRef{flp, vscp, VAccess::READ}}});
+        loopp->addStmtsp(util::incrementVar(vscp));
+        loopp->addStmtsp(new AstLoopTest{
+            flp, loopp,
+            new AstLte{flp, new AstVarRef{flp, vscp, VAccess::READ},
+                       new AstConst{flp, AstConst::WidthedValue{}, 32,
+                                    static_cast<uint32_t>(trigAccDTypep->left())}}});
+        staticp->addStmtsp(loopp);
+    }
+
+    // Step 16: Clean up
     netlistp->clearStlFirstIterationp();
 
     // Haven't split static initializer yet

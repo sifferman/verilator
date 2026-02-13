@@ -285,6 +285,7 @@ class AstNodeModule VL_NOT_FINAL : public AstNode {
     bool m_internal : 1;  // Internally created
     bool m_recursive : 1;  // Recursive module
     bool m_recursiveClone : 1;  // If recursive, what module it clones, otherwise nullptr
+    bool m_verilatorLib : 1;  // Module is a stub for a Verilator produced --lib-create
 protected:
     AstNodeModule(VNType t, FileLine* fl, const string& name, const string& libname)
         : AstNode{t, fl}
@@ -301,7 +302,8 @@ protected:
         , m_hierParams{false}
         , m_internal{false}
         , m_recursive{false}
-        , m_recursiveClone{false} {}
+        , m_recursiveClone{false}
+        , m_verilatorLib{false} {}
 
 public:
     ASTGEN_MEMBERS_AstNodeModule;
@@ -343,6 +345,8 @@ public:
     void recursive(bool flag) { m_recursive = flag; }
     void recursiveClone(bool flag) { m_recursiveClone = flag; }
     bool recursiveClone() const { return m_recursiveClone; }
+    void verilatorLib(bool flag) { m_verilatorLib = flag; }
+    bool verilatorLib() const { return m_verilatorLib; }
     VLifetime lifetime() const { return m_lifetime; }
     void lifetime(const VLifetime& flag) { m_lifetime = flag; }
     VTimescale timeunit() const { return m_timeunit; }
@@ -1254,6 +1258,7 @@ class AstNetlist final : public AstNode {
     VTimescale m_timeunit;  // Global time unit
     VTimescale m_timeprecision;  // Global time precision
     bool m_timescaleSpecified = false;  // Input HDL specified timescale
+    uint32_t m_nTraceCodes = 0;  // Number of trace codes used by design
 public:
     AstNetlist();
     ASTGEN_MEMBERS_AstNetlist;
@@ -1295,6 +1300,8 @@ public:
     void timeprecisionMerge(FileLine*, const VTimescale& value);
     void timescaleSpecified(bool specified) { m_timescaleSpecified = specified; }
     bool timescaleSpecified() const { return m_timescaleSpecified; }
+    uint32_t nTraceCodes() const { return m_nTraceCodes; }
+    void nTraceCodes(uint32_t value) { m_nTraceCodes = value; }
     AstVarScope* stlFirstIterationp();
     void clearStlFirstIterationp() { m_stlFirstIterationp = nullptr; }
     // NBA queue pairs for pre-resume commits
@@ -2116,26 +2123,26 @@ public:
         if (flag) m_funcLocalSticky = true;
     }
     void funcReturn(bool flag) { m_funcReturn = flag; }
+    bool gotNansiType() const { return m_gotNansiType; }
     void gotNansiType(bool flag) { m_gotNansiType = flag; }
-    bool gotNansiType() { return m_gotNansiType; }
+    bool hasStrengthAssignment() const { return m_hasStrengthAssignment; }
     void hasStrengthAssignment(bool flag) { m_hasStrengthAssignment = flag; }
-    bool hasStrengthAssignment() { return m_hasStrengthAssignment; }
-    void isDpiOpenArray(bool flag) { m_isDpiOpenArray = flag; }
     bool isDpiOpenArray() const VL_MT_SAFE { return m_isDpiOpenArray; }
+    void isDpiOpenArray(bool flag) { m_isDpiOpenArray = flag; }
     bool isHideLocal() const { return m_isHideLocal; }
     void isHideLocal(bool flag) { m_isHideLocal = flag; }
     bool isHideProtected() const { return m_isHideProtected; }
     void isHideProtected(bool flag) { m_isHideProtected = flag; }
-    void noCReset(bool flag) { m_noCReset = flag; }
     bool noCReset() const { return m_noCReset; }
-    void noReset(bool flag) { m_noReset = flag; }
+    void noCReset(bool flag) { m_noCReset = flag; }
     bool noReset() const { return m_noReset; }
-    void noSubst(bool flag) { m_noSubst = flag; }
+    void noReset(bool flag) { m_noReset = flag; }
     bool noSubst() const { return m_noSubst; }
-    void substConstOnly(bool flag) { m_substConstOnly = flag; }
+    void noSubst(bool flag) { m_noSubst = flag; }
     bool substConstOnly() const { return m_substConstOnly; }
-    void overriddenParam(bool flag) { m_overridenParam = flag; }
+    void substConstOnly(bool flag) { m_substConstOnly = flag; }
     bool overriddenParam() const { return m_overridenParam; }
+    void overriddenParam(bool flag) { m_overridenParam = flag; }
     void trace(bool flag) { m_trace = flag; }
     void isLatched(bool flag) { m_isLatched = flag; }
     bool isForceable() const { return m_isForceable; }

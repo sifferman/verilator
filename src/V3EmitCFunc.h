@@ -144,6 +144,8 @@ class EmitCFunc VL_NOT_FINAL : public EmitCConstInit {
     } m_emitDispState;
 
 protected:
+    VL_DEFINE_DEBUG_FUNCTIONS;
+
     EmitCLazyDecls m_lazyDecls{*this};  // Visitor for emitting lazy declarations
     bool m_useSelfForThis = false;  // Replace "this" with "vlSelf"
     bool m_usevlSelfRef = false;  // Use vlSelfRef reference instead of vlSelf pointer
@@ -478,7 +480,7 @@ public:
         if (nodep->isCoroutine()) {
             // Sometimes coroutines don't have co_awaits,
             // so emit a co_return at the end to avoid compile errors.
-            puts("co_return;");
+            puts("co_return;\n");
         }
 
         puts("}\n");

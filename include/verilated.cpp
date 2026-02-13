@@ -69,6 +69,7 @@
 # include <direct.h>  // mkdir
 #endif
 #ifdef __GLIBC__
+# include <cxxabi.h>
 # include <execinfo.h>
 # define _VL_HAVE_STACKTRACE
 #endif
@@ -1918,27 +1919,68 @@ IData VL_FREAD_I(int width, int array_lsb, int array_size, void* memp, IData fpi
     return read_count;
 }
 
+#ifdef _VL_HAVE_STACKTRACE
+static std::string _vl_stacktrace_demangle(const std::string& input) VL_MT_SAFE {
+    static VerilatedMutex s_demangleMutex;
+    const VerilatedLockGuard lock{s_demangleMutex};
+
+    std::string result;
+    result.reserve(input.size());
+
+    std::string word;
+    for (const char c : input) {
+        if (std::isalpha(c) || c == '_') {
+            word += c;
+        } else if (!word.empty() && std::isdigit(c)) {
+            word += c;
+        } else {
+            if (!word.empty()) {
+                // abi::__cxa_demangle mallocs demangled_name
+                int status = 0;
+                char* const demangled_name
+                    = abi::__cxa_demangle(word.c_str(), NULL, NULL, &status);
+                if (status == 0) {
+                    result += std::string{demangled_name};
+                    std::free(demangled_name);  // Free the allocated memory
+                } else {
+                    result += word;
+                }
+                word.clear();
+            }
+            result += c;
+        }
+    }
+    // input requires final newline, so last word can't be symbol
+    result += word;
+    return result;
+}
+#endif
+
 std::string VL_STACKTRACE_N() VL_MT_SAFE {
     static VerilatedMutex s_stackTraceMutex;
     const VerilatedLockGuard lock{s_stackTraceMutex};
 
+#ifdef _VL_HAVE_STACKTRACE
     int nptrs = 0;
     char** strings = nullptr;
 
-#ifdef _VL_HAVE_STACKTRACE
     constexpr int BT_BUF_SIZE = 100;
     void* buffer[BT_BUF_SIZE];
     nptrs = backtrace(buffer, BT_BUF_SIZE);
     strings = backtrace_symbols(buffer, nptrs);
-#endif
 
     // cppcheck-suppress knownConditionTrueFalse
-    if (!strings) return "Unable to backtrace\n";
+    if (!strings) return "Unable to backtrace, call failed\n";
 
     std::string result = "Backtrace:\n";
-    for (int j = 0; j < nptrs; ++j) result += std::string{strings[j]} + "\n"s;
+    for (int j = 0; j < nptrs; ++j)
+        result += _vl_stacktrace_demangle(std::string{strings[j]} + "\n"s);
+
     free(strings);
     return result;
+#else
+    return "Unable to backtrace; not supported\n";
+#endif
 }
 
 void VL_STACKTRACE() VL_MT_SAFE {

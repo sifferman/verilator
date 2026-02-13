@@ -815,12 +815,15 @@ public:
         RANDOMIZER_CLEARALL,
         RANDOMIZER_HARD,
         RANDOMIZER_UNIQUE,
+        RANDOMIZER_MARK_RANDC,
         RANDOMIZER_WRITE_VAR,
         RNG_GET_RANDSTATE,
         RNG_SET_RANDSTATE,
         SCHED_ANY_TRIGGERED,
         SCHED_AWAITING_CURRENT_TIME,
+        SCHED_READY,
         SCHED_COMMIT,
+        SCHED_MOVE_TO_RESUME_QUEUE,
         SCHED_DELAY,
         SCHED_DO_POST_UPDATES,
         SCHED_ENQUEUE,
@@ -945,12 +948,15 @@ inline std::ostream& operator<<(std::ostream& os, const VCMethod& rhs) {
            {RANDOMIZER_CLEARALL, "clearAll", false}, \
            {RANDOMIZER_HARD, "hard", false}, \
            {RANDOMIZER_UNIQUE, "rand_unique", false}, \
+           {RANDOMIZER_MARK_RANDC, "markRandc", false}, \
            {RANDOMIZER_WRITE_VAR, "write_var", false}, \
            {RNG_GET_RANDSTATE, "__Vm_rng.get_randstate", true}, \
            {RNG_SET_RANDSTATE, "__Vm_rng.set_randstate", false}, \
            {SCHED_ANY_TRIGGERED, "anyTriggered", false}, \
            {SCHED_AWAITING_CURRENT_TIME, "awaitingCurrentTime", true}, \
+           {SCHED_READY, "ready", false}, \
            {SCHED_COMMIT, "commit", false}, \
+           {SCHED_MOVE_TO_RESUME_QUEUE, "moveToResumeQueue", false}, \
            {SCHED_DELAY, "delay", false}, \
            {SCHED_DO_POST_UPDATES, "doPostUpdates", false}, \
            {SCHED_ENQUEUE, "enqueue", false}, \
@@ -1465,6 +1471,7 @@ public:
         UNROLL_FULL,
         FULL_CASE,
         PARALLEL_CASE,
+        VERILATOR_LIB,
         _ENUM_SIZE
     };
     enum en m_e;
@@ -1483,6 +1490,7 @@ public:
             "UNROLL_FULL",  //
             "FULL_CASE",  //
             "PARALLEL_CASE",  //
+            "VERILATOR_LIB",  //
             "_ENUM_SIZE"  //
         };
         return names[m_e];

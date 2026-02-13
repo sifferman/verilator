@@ -1349,6 +1349,7 @@ class AstExprStmt final : public AstNodeExpr {
     // @astgen op2 := resultp : AstNodeExpr
 private:
     bool m_hasResult = true;
+    bool m_containsTimingControl = false;
 
 public:
     AstExprStmt(FileLine* fl, AstNode* stmtsp, AstNodeExpr* resultp)
@@ -1367,8 +1368,10 @@ public:
         return resultp()->isPure();
     }
     bool sameNode(const AstNode*) const override { return true; }
-    bool hasResult() { return m_hasResult; }
+    bool hasResult() const { return m_hasResult; }
     void hasResult(bool flag) { m_hasResult = flag; }
+    void setTimingControl() { m_containsTimingControl = true; }
+    bool isTimingControl() const override { return m_containsTimingControl; }
 };
 class AstFError final : public AstNodeExpr {
     // @astgen op1 := filep : AstNode
@@ -4172,6 +4175,7 @@ public:
     }
     string emitVerilog() override { return "%k(%l %f* %r)"; }
     string emitC() override { return "VL_MULS_%nq%lq%rq(%lw, %P, %li, %ri)"; }
+    string emitSMT() const override { return "(bvmul %l %r)"; }
     string emitSimpleOperator() override { return ""; }
     bool emitCheckMaxWords() override { return true; }
     bool cleanOut() const override { return false; }

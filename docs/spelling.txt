@@ -273,6 +273,7 @@ Laroche
 Laurens
 Lavino
 Leber
+Leela
 Leendert
 Lem
 Lesik
@@ -361,6 +362,7 @@ Ondrej
 Oron
 Oyvind
 PLI
+Pakanati
 Palaniappan
 Patricio
 Peltonen
@@ -478,7 +480,9 @@ Tarik
 Tariq
 Tejada
 Tengstrand
+Tenstorrent
 Terpstra
+Testorrent
 Thiede
 Thierry
 Thyer
@@ -621,6 +625,7 @@ bitstoreal
 blackbox
 bokke
 bool
+booleans
 brancoliticus
 buf
 bufif
@@ -1102,6 +1107,7 @@ src
 srcdir
 srcfile
 sscanf
+stacktrace
 stderr
 stdin
 stdout
