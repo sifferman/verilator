@@ -882,8 +882,7 @@ class DelayedVisitor final : public VNVisitor {
             v3Global.rootp()->nbaQueuePairs().emplace_back(queueVscp, vscp);
         }
 
-        AstActive* const activep
-            = new AstActive{flp, "nba-value-queue", vscpInfo.senTreep()};
+        AstActive* const activep = new AstActive{flp, "nba-value-queue", vscpInfo.senTreep()};
         activep->senTreeStorep(vscpInfo.senTreep());
         scopep->addBlocksp(activep);
 
