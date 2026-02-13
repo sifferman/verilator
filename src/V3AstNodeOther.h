@@ -1248,6 +1248,9 @@ class AstNetlist final : public AstNode {
     // @astgen ptr := m_nbaEventTriggerp : Optional[AstVarScope]  // NBA event trigger
     // @astgen ptr := m_topScopep : Optional[AstTopScope]  // Singleton AstTopScope
     // @astgen ptr := m_stlFirstIterationp: Optional[AstVarScope]  // Settle first iteration flag
+    // NBA commit queue pairs: (queue VarScope, target VarScope)
+    // Used to commit queues before resuming coroutines from delays
+    std::vector<std::pair<AstVarScope*, AstVarScope*>> m_nbaQueuePairs;
     VTimescale m_timeunit;  // Global time unit
     VTimescale m_timeprecision;  // Global time precision
     bool m_timescaleSpecified = false;  // Input HDL specified timescale
@@ -1294,6 +1297,9 @@ public:
     bool timescaleSpecified() const { return m_timescaleSpecified; }
     AstVarScope* stlFirstIterationp();
     void clearStlFirstIterationp() { m_stlFirstIterationp = nullptr; }
+    // NBA queue pairs for pre-resume commits
+    auto& nbaQueuePairs() { return m_nbaQueuePairs; }
+    const auto& nbaQueuePairs() const { return m_nbaQueuePairs; }
 };
 class AstPackageExport final : public AstNode {
     // A package export declaration
