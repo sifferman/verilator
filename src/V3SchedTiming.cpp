@@ -137,8 +137,7 @@ AstCCall* TimingKit::createResume(AstNetlist* const netlistp) {
                 return;
             }
             AstCMethodHard* const moveToResumep = new AstCMethodHard{
-                fromp->fileline(), fromp->cloneTree(false),
-                VCMethod::SCHED_MOVE_TO_RESUME_QUEUE,
+                fromp->fileline(), fromp->cloneTree(false), VCMethod::SCHED_MOVE_TO_RESUME_QUEUE,
                 exprp->pinsp() ? exprp->pinsp()->cloneTree(true) : nullptr};
             moveToResumep->dtypeSetVoid();
             m_resumeFuncp->addStmtsp(moveToResumep->makeStmt());
