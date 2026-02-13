@@ -152,6 +152,7 @@ class DelayedVisitor final : public VNVisitor {
         const AstActive* m_fistActivep = nullptr;
         bool m_partial = false;  // Used on LHS of NBA under a Sel
         bool m_whole = false;  // Used on LHS of NBA as whole variable (no Sel)
+        bool m_multipleNbas = false;  // Has more than one NBA targeting this variable
         bool m_inLoop = false;  // Used on LHS of NBA in a loop
         bool m_inSuspOrFork = false;  // Used on LHS of NBA in suspendable process or fork
         Scheme m_scheme = Scheme::Undecided;  // Conversion scheme to use for this variable
@@ -178,8 +179,6 @@ class DelayedVisitor final : public VNVisitor {
             } m_flagSharedKit;
             struct {  // Stuff needed for Scheme::FlagUnique
                 AstAlwaysPost* postp;  // The post block for commiting results
-                AstVarScope* commitFlagp;  // The commit flag variable
-                AstVarScope* commitValp;  // The commit value variable
             } m_flagUniqueKit;
             struct {  // Stuff needed for Scheme::ValueQueueWhole/Scheme::ValueQueuePartial
                 AstVarScope* vscp;  // The commit queue variable
@@ -454,12 +453,16 @@ class DelayedVisitor final : public VNVisitor {
 
         // In a suspendable or fork, we need special handling
         if (vscpInfo.m_inSuspOrFork) {
-            // If there are any partial updates to a packed type, use the value queue
-            // scheme which correctly implements "last NBA wins" semantics by applying
-            // updates in order at commit time. ShadowVarMasked doesn't work here
-            // because suspend points between NBAs cause intermediate commits.
-            if (vscpInfo.m_partial && isIntegralOrPacked) return Scheme::ValueQueuePartial;
-            // For whole-only updates or non-packed types, use the unique flag scheme
+            // If there are multiple NBAs to the same packed variable, use the value
+            // queue scheme which correctly implements "last NBA wins" semantics by
+            // applying updates in order at commit time. FlagUnique doesn't work here
+            // because its commit order follows AST order, not execution order, and
+            // suspend points between NBAs can reorder execution relative to the AST.
+            if (vscpInfo.m_multipleNbas && isIntegralOrPacked) {
+                return Scheme::ValueQueuePartial;
+            }
+            // For a single NBA, or non-packed types, use the unique flag scheme
+            // which captures the exact LHS per NBA
             return Scheme::FlagUnique;
         }
         // Check for mixed usage (this also warns if not OK)
@@ -803,56 +806,50 @@ class DelayedVisitor final : public VNVisitor {
     }
 
     // Scheme::FlagUnique
-    // Used for whole-variable updates in suspendable processes where all NBAs to the
-    // same variable share a flag/value, so the last NBA wins.
     void prepareSchemeFlagUnique(AstVarScope* vscp, VarScopeInfo& vscpInfo) {
         UASSERT_OBJ(vscpInfo.m_scheme == Scheme::FlagUnique, vscp, "Inconsistent NBA scheme");
         FileLine* const flp = vscp->fileline();
         AstScope* const scopep = vscp->scopep();
-        // Create the AstActive for the Post logic
+        // Create the AstActive for the Pre/Post logic
         AstActive* const activep = new AstActive{flp, "nba-flag-unique", vscpInfo.senTreep()};
         activep->senTreeStorep(vscpInfo.senTreep());
         scopep->addBlocksp(activep);
-        // Add 'Post' scheduled process
+        // Add 'Post' scheduled process to be populated later
         AstAlwaysPost* const postp = new AstAlwaysPost{flp};
         activep->addStmtsp(postp);
         vscpInfo.flagUniqueKit().postp = postp;
-
-        // Create a shared flag variable to track whether any NBA occurred
-        const std::string flagName = "__VdlySet__" + vscp->varp()->shortName();
-        AstVarScope* const commitFlagp = createTemp(flp, scopep, flagName, 1);
-        commitFlagp->varp()->setIgnorePostWrite();
-        vscpInfo.flagUniqueKit().commitFlagp = commitFlagp;
-        // Create a shared value variable to hold the final value
-        const std::string valName = "__VdlyVal__" + vscp->varp()->shortName();
-        AstVarScope* const commitValp = createTemp(flp, scopep, valName, vscp->dtypep());
-        vscpInfo.flagUniqueKit().commitValp = commitValp;
-
-        // NBA 'Post' block: if (__VdlySet) { __VdlySet = 0; var = __VdlyVal; }
-        // Multiple NBAs to the same variable overwrite the shared value,
-        // so the last NBA wins when the post block commits.
-        AstIf* const ifp = new AstIf{flp, new AstVarRef{flp, commitFlagp, VAccess::READ}};
-        postp->addStmtsp(ifp);
-        ifp->addThensp(new AstAssign{flp, new AstVarRef{flp, commitFlagp, VAccess::WRITE},
-                                     new AstConst{flp, AstConst::BitFalse{}}});
-        ifp->addThensp(new AstAssign{flp, new AstVarRef{flp, vscp, VAccess::WRITE},
-                                     new AstVarRef{flp, commitValp, VAccess::READ}});
     }
     void convertSchemeFlagUnique(AstAssignDly* nodep, AstVarScope* vscp, VarScopeInfo& vscpInfo) {
         UASSERT_OBJ(vscpInfo.m_scheme == Scheme::FlagUnique, vscp, "Inconsistent NBA scheme");
-        FileLine* const flp = nodep->fileline();
+        FileLine* const flp = vscp->fileline();
+        AstScope* const scopep = VN_AS(nodep->user2p(), Scope);
 
-        AstVarScope* const commitFlagp = vscpInfo.flagUniqueKit().commitFlagp;
-        AstVarScope* const commitValp = vscpInfo.flagUniqueKit().commitValp;
+        // Base name suffix for signals constructed below
+        const std::string baseName = uniqueTmpName(scopep, vscp, vscpInfo);
 
-        // Capture the RHS value to be applied at 'Post' time
-        // Each NBA overwrites the shared value, so the last one wins
-        nodep->addHereThisAsNext(new AstAssign{flp, new AstVarRef{flp, commitValp, VAccess::WRITE},
-                                               nodep->rhsp()->unlinkFrBack()});
-        // Set the flag to indicate this NBA needs to be applied
-        nodep->addHereThisAsNext(new AstAssign{flp,
-                                               new AstVarRef{flp, commitFlagp, VAccess::WRITE},
-                                               new AstConst{flp, AstConst::BitTrue{}}});
+        // Unlink and capture the RHS value
+        AstNodeExpr* const capturedRhsp
+            = captureVal(scopep, nodep, nodep->rhsp()->unlinkFrBack(), "__VdlyVal" + baseName);
+
+        // Unlink and capture the LHS reference
+        AstNodeExpr* const capturedLhsp
+            = captureLhs(scopep, nodep, nodep->lhsp()->unlinkFrBack(), baseName);
+
+        // Create new flag
+        AstVarScope* const flagVscp = createTemp(flp, scopep, "__VdlySet" + baseName, 1);
+        flagVscp->varp()->setIgnorePostWrite();
+        // Set the flag at the original NBA
+        nodep->addHereThisAsNext(
+            new AstAssign{flp, new AstVarRef{flp, flagVscp, VAccess::WRITE},
+                          new AstConst{flp, AstConst::BitTrue{}}});
+        // Add the 'Post' scheduled commit
+        AstIf* const ifp = new AstIf{flp, new AstVarRef{flp, flagVscp, VAccess::READ}};
+        vscpInfo.flagUniqueKit().postp->addStmtsp(ifp);
+        // Immediately clear the flag
+        ifp->addThensp(new AstAssign{flp, new AstVarRef{flp, flagVscp, VAccess::WRITE},
+                                     new AstConst{flp, AstConst::BitFalse{}}});
+        // Commit the value
+        ifp->addThensp(new AstAssign{flp, capturedLhsp, capturedRhsp});
 
         // Delete original NBA
         pushDeletep(nodep->unlinkFrBack());
@@ -951,7 +948,7 @@ class DelayedVisitor final : public VNVisitor {
             }
         }
 
-        // Extract array indices (if any — scalars have none)
+        // Extract array indices (if any - scalars have none)
         std::vector<AstNodeExpr*> idxps;
         if (VN_IS(lhsNodep, ArraySel)) {
             while (AstArraySel* const aSelp = VN_CAST(lhsNodep, ArraySel)) {
@@ -1300,6 +1297,7 @@ class DelayedVisitor final : public VNVisitor {
         }
         // Note usage context
         const bool isPartial = VN_IS(nodep->lhsp(), Sel);
+        vscpInfo.m_multipleNbas |= (vscpInfo.m_partial || vscpInfo.m_whole);
         vscpInfo.m_partial |= isPartial;
         vscpInfo.m_whole |= !isPartial;
         vscpInfo.m_inLoop |= m_inLoop;
