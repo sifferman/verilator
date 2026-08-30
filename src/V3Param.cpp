@@ -1205,7 +1205,9 @@ class ParamProcessor final {
     // where `base = inner_a::v`), resolving siblings deepest-first so the
     // whole chain constifies.  `inProgress` guards against reference cycles.
     void constifyMemberValue(AstVar* varp, std::set<AstVar*>& inProgress) {
-        if (!varp->valuep() || VN_IS(varp->valuep(), Const)) return;
+        // Both call sites filter on a non-Const valuep; guard is for re-entry
+        // once a sibling has already been folded.
+        if (!varp->valuep() || VN_IS(varp->valuep(), Const)) return;  // LCOV_EXCL_BR_LINE
         if (!inProgress.insert(varp).second) {
             // Re-entered while still resolving varp: its value transitively
             // references itself.  Report and replace the value with a Const, as
@@ -1246,7 +1248,7 @@ class ParamProcessor final {
         } else {
             AstNodePreSel* const selp = VN_AS(dotp->rhsp(), NodePreSel);
             if (AstAttrOf* const attrp = selp->attrp()) {
-                if (AstNode* const oldFromp = attrp->fromp()) {
+                if (AstNode* const oldFromp = attrp->fromp()) {  // LCOV_EXCL_BR_LINE
                     oldFromp->replaceWith(valuep->cloneTree(false));
                     VL_DO_DANGLING(oldFromp->deleteTree(), oldFromp);
                 }
@@ -1267,19 +1269,21 @@ class ParamProcessor final {
                 = fromDTypep ? VN_CAST(fromDTypep->skipRefOrNullp(), NodeArrayDType) : nullptr;
             if (arrayDTypep) {
                 const AstNodeDType* const elemDTypep = arrayDTypep->subDTypep();
-                return elemDTypep && VN_IS(elemDTypep->skipRefOrNullp(), NodeUOrStructDType);
+                return elemDTypep  // LCOV_EXCL_BR_LINE
+                       && VN_IS(elemDTypep->skipRefOrNullp(), NodeUOrStructDType);
             }
             return isDeferredMemberBase(selp->fromp());
         }
         const AstNodeDType* const dtypep = nodep->dtypep();
-        return dtypep && VN_IS(dtypep->skipRefOrNullp(), NodeUOrStructDType);
+        return dtypep  // LCOV_EXCL_BR_LINE
+               && VN_IS(dtypep->skipRefOrNullp(), NodeUOrStructDType);
     }
 
     // Lower a Dot exposed after its inner class::member reference was substituted.
     static void resolveMemberDot(AstDot* dotp) {
         AstNodeExpr* const lhsp = VN_CAST(dotp->lhsp(), NodeExpr);
         AstParseRef* const memberRefp = memberParseRef(dotp->rhsp());
-        if (!lhsp || !memberRefp || !isDeferredMemberBase(lhsp)) return;
+        if (!lhsp || !memberRefp || !isDeferredMemberBase(lhsp)) return;  // LCOV_EXCL_BR_LINE
         AstMemberSel* const newp = new AstMemberSel{memberRefp->fileline(), lhsp->unlinkFrBack(),
                                                     VFlagChildDType{}, memberRefp->name()};
         replaceMemberDot(dotp, memberRefp, newp);
@@ -1343,7 +1347,7 @@ class ParamProcessor final {
         AstNode* const memberp = m_memberMap.findMember(lhsClassp, parseRefp->name());
         UINFO(9, "Resolve deferred class member: " << parseRefp->name() << " -> " << memberp);
         if (AstTypedef* const tdefp = VN_CAST(memberp, Typedef)) {
-            if (parseRefp != dotp->rhsp()) return;
+            if (parseRefp != dotp->rhsp()) return;  // LCOV_EXCL_BR_LINE
             AstRefDType* const refp = new AstRefDType{dotp->fileline(), tdefp->name()};
             refp->typedefp(tdefp);
             dotp->replaceWith(refp);
@@ -1357,13 +1361,13 @@ class ParamProcessor final {
     // reverse-order deferred-Dot walk lowers any outer fields to MemberSels.
     void substituteParamMember(AstDot* const dotp, AstParseRef* const memberRefp,
                                AstVar* const varp) {
-        if (!varp->isParam() || !varp->valuep()) return;
+        if (!varp->isParam() || !varp->valuep()) return;  // LCOV_EXCL_BR_LINE
         if (!VN_IS(varp->valuep(), Const)) {
             std::set<AstVar*> inProgress;
             constifyMemberValue(varp, inProgress);
         }
         AstConst* const constp = VN_CAST(varp->valuep(), Const);
-        if (!constp) return;
+        if (!constp) return;  // LCOV_EXCL_BR_LINE
         AstConst* const newp = constp->cloneTree(false);
         newp->dtypep(varp->subDTypep());
         replaceMemberDot(dotp, memberRefp, newp);

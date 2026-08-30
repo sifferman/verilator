@@ -1032,7 +1032,7 @@ public:
 
         // Helper: check if a RefDType might resolve to a class later.
         const auto isPotentialClassRef = [](const AstRefDType* refp) -> bool {
-            return refp && !refp->typeofp()
+            return refp && !refp->typeofp()  // LCOV_EXCL_BR_LINE
                    && (!refp->classOrPackageOpp()
                        || VN_IS(refp->classOrPackageOpp(), ClassOrPackageRef));
         };
@@ -5993,7 +5993,8 @@ class LinkDotResolveVisitor final : public VNVisitor {
             return true;
         }
         AstDot* const dotp = VN_CAST(nodep, Dot);
-        return dotp && collectScopeRefs(dotp->lhsp(), refps)
+        return dotp  // LCOV_EXCL_BR_LINE
+               && collectScopeRefs(dotp->lhsp(), refps)  // LCOV_EXCL_BR_LINE
                && collectScopeRefs(dotp->rhsp(), refps);
     }
 
@@ -6001,7 +6002,8 @@ class LinkDotResolveVisitor final : public VNVisitor {
     // `pkg::outer::inner::t`) and reduce it to its innermost ClassOrPackageRef.
     bool reduceScopeDot(AstRefDType* nodep, AstDot* scopeDotp) {
         std::vector<AstClassOrPackageRef*> refps;
-        if (!collectScopeRefs(scopeDotp, refps)) return false;
+        // Caller only passes a Dot chain built from ClassOrPackageRefs.
+        if (!collectScopeRefs(scopeDotp, refps)) return false;  // LCOV_EXCL_BR_LINE
 
         VSymEnt* scopeSymp = m_ds.m_dotSymp;
         for (size_t i = 0; i < refps.size(); ++i) {
@@ -6011,10 +6013,13 @@ class LinkDotResolveVisitor final : public VNVisitor {
                                                     "class/package reference")) {
                 return true;  // Error already reported
             }
-            if (i + 1 == refps.size()) break;
-            AstNodeModule* const modp = refp->classOrPackageSkipp();
-            if (!modp) return false;
-            scopeSymp = m_statep->getNodeSym(modp);
+            // Descend into the resolved scope for the next link in the chain.
+            // The last ref is the one we keep, so nothing to descend into there.
+            if (i + 1 < refps.size()) {
+                AstNodeModule* const modp = refp->classOrPackageSkipp();
+                if (!modp) return false;  // LCOV_EXCL_LINE
+                scopeSymp = m_statep->getNodeSym(modp);
+            }
         }
         AstClassOrPackageRef* const innerp = refps.back();
         innerp->unlinkFrBack();
